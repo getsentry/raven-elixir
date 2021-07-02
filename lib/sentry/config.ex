@@ -18,7 +18,24 @@ defmodule Sentry.Config do
 
   @permitted_log_level_values ~w(debug info warning warn error)a
 
-  def validate_config! do
+  @doc """
+  Sets up and ensures valid configuration.
+
+  Elixir releases set the "RELEASE_VSN" system environment variable. If `:release` is
+  not configured, "RELEASE_VSN" is checked and stored if it exists.
+  """
+  @spec set_up_and_validate_config!() :: :ok
+  def set_up_and_validate_config! do
+    validate_json_config!()
+    validate_log_level_config!()
+    release = get_config(:release)
+
+    if release == nil do
+      system_func = fn -> get_from_system_environment("RELEASE_VSN") end
+      save_system_to_application(:release, system_func)
+    end
+
+    :ok
   end
 
   def dsn do
@@ -254,9 +271,9 @@ defmodule Sentry.Config do
   end
 
   defp get_from_system_environment(key) when is_binary(key) do
-    case System.get_env(key) do
-      nil -> :not_found
-      value -> {:ok, value}
+    case System.fetch_env(key) do
+      :error -> :not_found
+      {:ok, value} -> {:ok, value}
     end
   end
 
@@ -286,5 +303,42 @@ defmodule Sentry.Config do
       |> String.upcase()
 
     "SENTRY_#{string_key}"
+  end
+
+  defp validate_json_config!() do
+    case json_library() do
+      nil ->
+        raise ArgumentError.exception("nil is not a valid :json_library configuration")
+
+      library ->
+        try do
+          with {:ok, %{}} <- library.decode("{}"),
+               {:ok, "{}"} <- library.encode(%{}) do
+            :ok
+          else
+            _ ->
+              raise ArgumentError.exception(
+                      "configured :json_library #{inspect(library)} does not implement decode/1 and encode/1"
+                    )
+          end
+        rescue
+          UndefinedFunctionError ->
+            reraise ArgumentError.exception("""
+                    configured :json_library #{inspect(library)} is not available or does not implement decode/1 and encode/1.
+                    Do you need to add #{inspect(library)} to your mix.exs?
+                    """),
+                    __STACKTRACE__
+        end
+    end
+  end
+
+  defp validate_log_level_config!() do
+    value = log_level()
+
+    if value in permitted_log_level_values() do
+      :ok
+    else
+      raise ArgumentError.exception("#{inspect(value)} is not a valid :log_level configuration")
+    end
   end
 end
